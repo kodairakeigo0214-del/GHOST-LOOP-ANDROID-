@@ -1,0 +1,91 @@
+name: Build GHOST LOOP test APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Prepare Capacitor project
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          html = Path('www/index.html')
+          if not html.is_file():
+              source = Path('GHOST_LOOP_v13_guide_clean.html')
+              if not source.is_file():
+                  raise SystemExit('Missing GHOST_LOOP_v13_guide_clean.html or www/index.html')
+              html.parent.mkdir(parents=True,exist_ok=True)
+              html.write_bytes(source.read_bytes())
+          if not Path('package.json').is_file():
+              package = {'name':'ghost-loop-android','version':'0.1.0','private':True,'dependencies':{'@capacitor/core':'^8.0.0','@capacitor/android':'^8.0.0'},'devDependencies':{'@capacitor/cli':'^8.0.0'}}
+              Path('package.json').write_text(json.dumps(package))
+          if not Path('capacitor.config.json').is_file():
+              config = {'appId':'com.cracknuts.ghostloop','appName':'GHOST LOOP','webDir':'www'}
+              Path('capacitor.config.json').write_text(json.dumps(config))
+          print('HTML bytes:',html.stat().st_size)
+          PY
+
+      - name: Install Capacitor 8 dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Create Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: Force landscape orientation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          xml = manifest.read_text()
+          marker='android:name=".MainActivity"'
+          if marker not in xml:
+              raise SystemExit('MainActivity not found; cannot safely set orientation')
+          xml=xml.replace(marker,marker+'\n            android:screenOrientation="landscape"',1)
+          manifest.write_text(xml)
+          print('Landscape set on MainActivity')
+          PY
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GHOST-LOOP-test-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
